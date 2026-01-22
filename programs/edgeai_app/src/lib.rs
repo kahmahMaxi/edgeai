@@ -80,4 +80,9 @@ pub mod edgeai_app {
     pub fn distribute_fees(ctx: Context<DistributeFees>, amount: u64) -> Result<()> {
         instructions::distribute_fees::handler(ctx, amount)
     }
+
+    /// Mint tokens (admin only, for testing/initial distribution)
+    pub fn mint_tokens(ctx: Context<MintTokens>, amount: u64) -> Result<()> {
+        instructions::mint_tokens::handler(ctx, amount)
+    }
 }

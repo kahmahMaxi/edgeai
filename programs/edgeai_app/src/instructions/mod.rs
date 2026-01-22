@@ -6,6 +6,7 @@ pub mod stake;
 pub mod unstake;
 pub mod update_config;
 pub mod distribute_fees;
+pub mod mint_tokens;
 
 pub use initialize_config::*;
 pub use create_token_mint::*;
@@ -15,3 +16,4 @@ pub use stake::*;
 pub use unstake::*;
 pub use update_config::*;
 pub use distribute_fees::*;
+pub use mint_tokens::*;
