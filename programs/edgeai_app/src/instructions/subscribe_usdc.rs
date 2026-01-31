@@ -43,6 +43,12 @@ pub fn handler(ctx: Context<SubscribeUsdc>) -> Result<()> {
     let clock = Clock::get()?;
     let config = &ctx.accounts.config;
     
+    // Re-init protection: if an active subscription already exists, reject.
+    let existing = &ctx.accounts.subscription;
+    if existing.expires_at != 0 && existing.is_active(clock.unix_timestamp) {
+        return Err(ErrorCode::SubscriptionAlreadyActive.into());
+    }
+    
     // Transfer USDC to fee wallet
     let cpi_accounts = Transfer {
         from: ctx.accounts.user_token_account.to_account_info(),

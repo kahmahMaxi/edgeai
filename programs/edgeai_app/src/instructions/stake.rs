@@ -52,7 +52,6 @@ pub fn handler(ctx: Context<Stake>, amount: u64) -> Result<()> {
     require!(amount > 0, ErrorCode::InvalidAmount);
     
     let clock = Clock::get()?;
-    let config = &ctx.accounts.config;
     
     // Verify user has enough tokens
     require!(

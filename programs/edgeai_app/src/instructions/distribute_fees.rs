@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{Token, TokenAccount, Transfer};
+use anchor_spl::token::{Token, Transfer};
 use crate::state::{Config, StakingVault};
 use crate::constants::{CONFIG_SEED, STAKING_VAULT_SEED};
 use crate::error::ErrorCode;

@@ -8,6 +8,8 @@ pub enum ErrorCode {
     InvalidSubscriptionDuration,
     #[msg("Subscription expired")]
     SubscriptionExpired,
+    #[msg("Subscription already active")]
+    SubscriptionAlreadyActive,
     #[msg("Insufficient funds")]
     InsufficientFunds,
     #[msg("Invalid amount")]

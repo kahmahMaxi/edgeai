@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use crate::state::{Config, PaymentMethod};
+use crate::state::Config;
 use crate::constants::CONFIG_SEED;
 use crate::error::ErrorCode;
 

@@ -1,5 +1,4 @@
 use anchor_lang::prelude::*;
-use anchor_lang::system_program;
 use crate::state::{Config, Subscription, PaymentMethod};
 use crate::constants::{CONFIG_SEED, SUBSCRIPTION_SEED};
 use crate::error::ErrorCode;
@@ -34,6 +33,12 @@ pub struct SubscribeSol<'info> {
 pub fn handler(ctx: Context<SubscribeSol>) -> Result<()> {
     let clock = Clock::get()?;
     let config = &ctx.accounts.config;
+
+    // Re-init protection: if an active subscription already exists, reject.
+    let existing = &ctx.accounts.subscription;
+    if existing.expires_at != 0 && existing.is_active(clock.unix_timestamp) {
+        return Err(ErrorCode::SubscriptionAlreadyActive.into());
+    }
     
     let required_lamports = config.subscription_price_sol;
     

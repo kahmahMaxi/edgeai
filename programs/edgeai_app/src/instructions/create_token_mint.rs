@@ -1,6 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{Mint, Token, TokenAccount};
-use anchor_spl::token::spl_token::instruction::AuthorityType;
+use anchor_spl::token::{Mint, Token};
 use crate::state::Config;
 use crate::constants::{CONFIG_SEED, TOKEN_MINT_SEED, TOKEN_DECIMALS};
 use crate::error::ErrorCode;
