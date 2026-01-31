@@ -41,6 +41,7 @@ pub struct CreateTokenMint<'info> {
     pub admin: Signer<'info>,
     
     #[account(
+        mut,
         seeds = [CONFIG_SEED],
         bump = config.bump,
         has_one = admin @ ErrorCode::Unauthorized
