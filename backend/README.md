@@ -13,9 +13,30 @@ FastAPI backend for boosting prediction market probabilities using sentiment ana
 
 ## Setup
 
-### Install Dependencies
+### Prerequisites
+
+Make sure you have Python 3.11+ and pip installed. On Debian/Ubuntu:
 
 ```bash
+sudo apt install python3 python3-pip python3-venv
+```
+
+### Install Dependencies
+
+**Option 1: Using the run script (recommended)**
+```bash
+./run.sh
+```
+
+**Option 2: Manual setup**
+```bash
+# Create virtual environment
+python3 -m venv venv
+
+# Activate virtual environment
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 

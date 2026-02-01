@@ -9,15 +9,29 @@ echo ""
 if [ ! -d "venv" ]; then
     echo "Creating virtual environment..."
     python3 -m venv venv
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to create virtual environment"
+        echo "Make sure python3-venv is installed: sudo apt install python3-venv"
+        exit 1
+    fi
 fi
 
 # Activate virtual environment
 echo "Activating virtual environment..."
 source venv/bin/activate
 
+# Upgrade pip
+echo "Upgrading pip..."
+pip install --upgrade pip
+
 # Install dependencies
 echo "Installing dependencies..."
 pip install -r requirements.txt
+
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to install dependencies"
+    exit 1
+fi
 
 # Run the server
 echo ""
