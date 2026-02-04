@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 import requests
 import os
+import json
 from datetime import datetime
 import logging
 
@@ -79,33 +80,70 @@ def get_polymarket_markets(category: str = "crypto", limit: int = 50) -> List[di
         response.raise_for_status()
         data = response.json()
         
+        # Polymarket API returns a list directly, not a dict with "data" key
+        if isinstance(data, list):
+            market_list = data
+        elif isinstance(data, dict) and "data" in data:
+            market_list = data["data"]
+        else:
+            logger.error(f"Unexpected API response format: {type(data)}")
+            return []
+        
         markets = []
-        for market in data.get("data", []):
+        for market in market_list:
+            if not isinstance(market, dict):
+                continue
+                
             # Extract key information
             slug = market.get("slug", "")
             question = market.get("question", "")
             
             # Get market prices (yes/no)
-            outcomes = market.get("outcomes", [])
+            # Outcomes and prices are JSON strings in the API response
+            outcomes_str = market.get("outcomes", "[]")
+            prices_str = market.get("outcomePrices", "[]")
+            
+            try:
+                if isinstance(outcomes_str, str):
+                    outcomes = json.loads(outcomes_str)
+                else:
+                    outcomes = outcomes_str
+                    
+                if isinstance(prices_str, str):
+                    prices = json.loads(prices_str)
+                else:
+                    prices = prices_str
+            except (json.JSONDecodeError, TypeError):
+                outcomes = []
+                prices = []
+            
             yes_price = 0.0
             no_price = 0.0
             
-            for outcome in outcomes:
-                if outcome.get("title", "").lower() in ["yes", "true"]:
-                    yes_price = float(outcome.get("price", 0))
-                elif outcome.get("title", "").lower() in ["no", "false"]:
-                    no_price = float(outcome.get("price", 0))
+            # Match outcomes with prices
+            for i, outcome in enumerate(outcomes):
+                if i < len(prices):
+                    price = float(prices[i])
+                    outcome_lower = str(outcome).lower()
+                    if outcome_lower in ["yes", "true"]:
+                        yes_price = price
+                    elif outcome_lower in ["no", "false"]:
+                        no_price = price
             
             # Calculate probabilities
             total = yes_price + no_price
             yes_prob = yes_price / total if total > 0 else 0.5
             no_prob = no_price / total if total > 0 else 0.5
             
-            # Get volume
-            volume = float(market.get("volume", 0))
+            # Get volume (can be string or number)
+            volume_str = market.get("volume") or market.get("volumeNum", 0)
+            try:
+                volume = float(volume_str)
+            except (ValueError, TypeError):
+                volume = 0.0
             
             # Get end date
-            end_date = market.get("endDate", None)
+            end_date = market.get("endDate") or market.get("endDateIso", None)
             
             # Filter for high volume markets (volume > 1000)
             if volume > 1000:
