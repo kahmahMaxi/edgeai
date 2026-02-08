@@ -68,6 +68,10 @@ BACKEND_URL=http://localhost:8000  # Your FastAPI backend URL
 RPC_URL=https://api.devnet.solana.com  # Solana RPC endpoint
 FEE_WALLET=your_fee_wallet_address  # For subscription payments
 PROGRAM_ID=JG8fS89RdsLUGUst41UTj8kFFEjBxQKV6yzPaBmAEwL  # Your program ID
+
+# Optional: Override subscription prices for display (if on-chain fetch fails)
+# SUBSCRIPTION_PRICE_SOL=0.1  # in SOL (fallback only, prices are on-chain)
+# SUBSCRIPTION_PRICE_USDC=10  # in USDC (fallback only, prices are on-chain)
 WEBHOOK_URL=  # Leave empty for polling, set for webhook mode
 PORT=8000  # For webhook mode
 ```
@@ -99,12 +103,37 @@ railway up
 ## Commands
 
 ### `/start`
-Welcome message and wallet connection instructions.
+Welcome message and wallet connection instructions. Automatically creates user entry in database.
+
+### `/help`
+Show comprehensive command guide and quick start instructions.
+
+### `/connect <pubkey>`
+Connect your Solana wallet to the bot:
+- Validates wallet address format (base58)
+- Stores wallet in database
+- Required for premium features
+
+Example: `/connect 7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU`
 
 ### `/subscribe`
-Check premium subscription status. Shows:
-- Active subscription expiration date (if premium)
-- Payment instructions (if not premium)
+Check premium subscription status and subscribe:
+- Shows active subscription expiration (if premium)
+- **Displays current subscription prices** fetched from on-chain Config PDA:
+  - SOL price (in SOL)
+  - USDC price (in USDC)
+- Displays payment instructions with fee wallet address
+- **Auto-polling**: After payment, automatically checks for subscription every 30 seconds (up to 5 minutes)
+- Sends confirmation message when subscription is detected
+
+**Note**: Subscription prices are stored on-chain in the Config PDA and can be updated by the admin using the `update_config` instruction. The bot automatically fetches and displays the current prices.
+
+### `/alerts on/off`
+Toggle signal notifications:
+- `/alerts on` - Enable background signal notifications
+- `/alerts off` - Disable notifications
+- Default: enabled for all users
+- Only premium users with alerts enabled receive notifications
 
 ### `/markets`
 Fetch and display top 10 prediction markets from backend with:
@@ -129,13 +158,55 @@ View top signals where boosted probability significantly exceeds market probabil
 - Sorted by boost amount
 - Includes quick boost commands
 
+## Database
+
+The bot uses SQLite (`users.db`) to store:
+- `user_id` - Telegram user ID
+- `chat_id` - Telegram chat ID
+- `wallet_pubkey` - Connected Solana wallet address
+- `alerts_opt_in` - Notification preference (default: enabled)
+- `created_at` / `updated_at` - Timestamps
+
+The database is automatically created on first run. No manual setup required.
+
 ## Wallet Connection
 
 Users can connect their Solana wallet by:
-1. Sending their wallet address as a message to the bot
-2. Using the Phantom deep link (if implemented in frontend)
+1. Using `/connect <pubkey>` command (recommended)
+2. Sending wallet address as a message (fallback)
 
-The bot validates the address format and stores it for premium checks.
+The bot validates the address format (base58) and stores it in the database for premium checks.
+
+## Subscription Prices
+
+**Prices are stored on-chain** in the Config PDA, not in `.env`:
+- `subscription_price_sol` - Price in lamports (1 SOL = 1e9 lamports)
+- `subscription_price_usdc` - Price in USDC with 6 decimals (1 USDC = 1e6)
+
+The bot automatically fetches prices from the on-chain Config PDA and displays them in `/subscribe`.
+
+### How to Update Prices
+
+Prices can only be changed on-chain by the admin using the `update_config` instruction:
+
+```typescript
+// Example: Update SOL price to 0.1 SOL (100,000,000 lamports)
+await program.methods
+  .updateConfig(
+    new BN(100_000_000), // subscription_price_sol in lamports
+    null,                 // subscription_price_usdc (null = don't change)
+    null,                 // subscription_duration
+    null,                 // staking_fee_share_bps
+    null                  // fee_wallet
+  )
+  .accounts({
+    admin: adminKeypair.publicKey,
+    config: configPda,
+  })
+  .rpc();
+```
+
+**Note**: `.env` variables `SUBSCRIPTION_PRICE_SOL` and `SUBSCRIPTION_PRICE_USDC` are optional fallbacks only used if on-chain fetch fails. The actual prices are always stored on-chain.
 
 ## Premium Subscription Check
 
@@ -144,9 +215,15 @@ The bot checks subscription status by:
 2. Querying Solana RPC for the account
 3. Checking if `expires_at > current_timestamp`
 
+**Subscription Polling:**
+- After `/subscribe` shows payment instructions, the bot automatically polls RPC every 30 seconds
+- Polls for up to 5 minutes (10 attempts)
+- Sends confirmation message when subscription is detected
+- No manual refresh needed!
+
 Premium users get:
 - Access to `/signals` command
-- Automatic signal notifications every 10 minutes
+- Automatic signal notifications every 10 minutes (if alerts enabled)
 - Priority updates
 
 ## Background Jobs
@@ -155,7 +232,10 @@ The bot runs a background job every 10 minutes that:
 1. Fetches markets from backend
 2. Calculates boosted probabilities
 3. Identifies new strong signals (boost > 5%)
-4. Pushes notifications to premium users
+4. Pushes notifications to **opted-in premium users only**
+   - Checks database for `alerts_opt_in = 1`
+   - Verifies premium status on-chain
+   - Sends to users who meet both conditions
 
 ## Deployment
 
@@ -193,15 +273,29 @@ The bot runs a background job every 10 minutes that:
 - Verify backend is running and accessible
 - Check logs for errors
 
+### Database issues
+- Database file `users.db` is created automatically
+- If corrupted, delete `users.db` and restart bot (users will need to reconnect)
+- Check file permissions in deployment environment
+
 ### Premium check failing
 - Verify RPC_URL is correct and accessible
 - Check PROGRAM_ID matches your deployed program
 - Ensure wallet address format is correct
+- Use `/connect` to reconnect wallet if needed
 
 ### Signals not pushing
-- Check background job is running (logs should show "Starting background signal pusher...")
+- Check background job is running (logs should show "Running background signal pusher...")
 - Verify users have active subscriptions
-- Check backend API is responding
+- Check users have alerts enabled (`/alerts on`)
+- Verify backend API is responding
+- Check database for opted-in users: `SELECT * FROM users WHERE alerts_opt_in = 1`
+
+### Subscription polling not working
+- Ensure wallet is connected (`/connect`)
+- Check RPC endpoint is accessible
+- Subscription may take a few minutes to appear on-chain
+- Try `/subscribe` again if polling times out
 
 ## Development
 
@@ -229,9 +323,14 @@ Logs are output to console with INFO level. For production, consider:
 
 ## Future Enhancements
 
-- [ ] Database for persistent user/wallet storage
+- [x] SQLite database for persistent user/wallet storage
+- [x] `/connect` command for wallet connection
+- [x] `/help` command
+- [x] `/alerts` toggle for notifications
+- [x] Subscription polling for automatic confirmation
 - [ ] Admin commands for bot management
 - [ ] Custom signal filters per user
 - [ ] Integration with Solana wallet adapter
 - [ ] Multi-language support
 - [ ] Analytics and usage tracking
+- [ ] Transaction links in subscription messages

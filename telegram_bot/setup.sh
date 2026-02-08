@@ -35,6 +35,11 @@ RPC_URL=https://api.devnet.solana.com
 # Fee wallet address (for subscription payments)
 FEE_WALLET=your_fee_wallet_address_here
 
+# Optional: Override subscription prices for display (if on-chain fetch fails)
+# Prices are stored on-chain in Config PDA, but these can be used as fallback
+# SUBSCRIPTION_PRICE_SOL=0.1  # in SOL (not lamports)
+# SUBSCRIPTION_PRICE_USDC=10  # in USDC (not 6 decimals)
+
 # Program ID (from your Anchor program)
 PROGRAM_ID=JG8fS89RdsLUGUst41UTj8kFFEjBxQKV6yzPaBmAEwL
 

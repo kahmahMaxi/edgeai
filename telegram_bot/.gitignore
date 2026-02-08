@@ -28,3 +28,5 @@ Thumbs.db
 
 # Bot specific
 user_data/
+users.db
+users.db-journal
