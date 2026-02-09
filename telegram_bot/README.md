@@ -66,12 +66,14 @@ EOF
 BOT_TOKEN=your_bot_token_from_botfather
 BACKEND_URL=http://localhost:8000  # Your FastAPI backend URL
 RPC_URL=https://api.devnet.solana.com  # Solana RPC endpoint
-FEE_WALLET=your_fee_wallet_address  # For subscription payments
+FEE_WALLET=3vqEDEV6PBvpRc6TSC7grWPNAWGhL4q8mhxfeAubZ6RJ  # Fee wallet for subscription payments
 PROGRAM_ID=JG8fS89RdsLUGUst41UTj8kFFEjBxQKV6yzPaBmAEwL  # Your program ID
 
-# Optional: Override subscription prices for display (if on-chain fetch fails)
-# SUBSCRIPTION_PRICE_SOL=0.1  # in SOL (fallback only, prices are on-chain)
-# SUBSCRIPTION_PRICE_USDC=10  # in USDC (fallback only, prices are on-chain)
+# Subscription payment configuration
+SUBSCRIBE_SOL_ENABLED=true   # Enable/disable SOL payments
+SUBSCRIBE_SOL_AMOUNT=0.01    # Amount in SOL (e.g., 0.01 SOL)
+SUBSCRIBE_USDC_ENABLED=true # Enable/disable USDC payments
+SUBSCRIBE_USDC_AMOUNT=3.0    # Amount in USDC (e.g., 3.0 USDC)
 WEBHOOK_URL=  # Leave empty for polling, set for webhook mode
 PORT=8000  # For webhook mode
 ```
@@ -119,14 +121,23 @@ Example: `/connect 7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU`
 ### `/subscribe`
 Check premium subscription status and subscribe:
 - Shows active subscription expiration (if premium)
-- **Displays current subscription prices** fetched from on-chain Config PDA:
-  - SOL price (in SOL)
-  - USDC price (in USDC)
-- Displays payment instructions with fee wallet address
-- **Auto-polling**: After payment, automatically checks for subscription every 30 seconds (up to 5 minutes)
-- Sends confirmation message when subscription is detected
+- **Configurable payment options** from `.env`:
+  - SOL payment: Amount and wallet from `SUBSCRIBE_SOL_AMOUNT` and `FEE_WALLET`
+  - USDC payment: Amount and wallet from `SUBSCRIBE_USDC_AMOUNT` and `FEE_WALLET`
+- If both methods disabled → Shows "Subscription temporarily disabled"
+- **Simple flow**: Send payment using your wallet (Phantom/etc), bot auto-detects subscription
+- **Auto-polling**: Automatically checks for subscription every 30 seconds (up to 5 minutes)
+- Sends confirmation "Premium Active!" when subscription is detected
+- No dApp needed — just send payment and wait!
 
-**Note**: Subscription prices are stored on-chain in the Config PDA and can be updated by the admin using the `update_config` instruction. The bot automatically fetches and displays the current prices.
+**Configuration**: Set `SUBSCRIBE_SOL_ENABLED`, `SUBSCRIBE_SOL_AMOUNT`, `SUBSCRIBE_USDC_ENABLED`, `SUBSCRIBE_USDC_AMOUNT` in `.env` to customize payment options.
+
+### `/status`
+Check your current status:
+- Connected wallet address
+- Premium subscription status and expiration (if active)
+- Alerts opt-in status (enabled/disabled)
+- Quick reference for all your settings
 
 ### `/alerts on/off`
 Toggle signal notifications:
@@ -177,36 +188,34 @@ Users can connect their Solana wallet by:
 
 The bot validates the address format (base58) and stores it in the database for premium checks.
 
-## Subscription Prices
+## Subscription Configuration
 
-**Prices are stored on-chain** in the Config PDA, not in `.env`:
-- `subscription_price_sol` - Price in lamports (1 SOL = 1e9 lamports)
-- `subscription_price_usdc` - Price in USDC with 6 decimals (1 USDC = 1e6)
+**Payment options are configured via `.env`** for easy testing and customization:
 
-The bot automatically fetches prices from the on-chain Config PDA and displays them in `/subscribe`.
+- `SUBSCRIBE_SOL_ENABLED` - Enable/disable SOL payments (true/false)
+- `SUBSCRIBE_SOL_AMOUNT` - Amount in SOL (e.g., 0.01)
+- `SUBSCRIBE_USDC_ENABLED` - Enable/disable USDC payments (true/false)
+- `SUBSCRIBE_USDC_AMOUNT` - Amount in USDC (e.g., 3.0)
+- `FEE_WALLET` - Wallet address to receive payments
 
-### How to Update Prices
+### Example Configuration
 
-Prices can only be changed on-chain by the admin using the `update_config` instruction:
-
-```typescript
-// Example: Update SOL price to 0.1 SOL (100,000,000 lamports)
-await program.methods
-  .updateConfig(
-    new BN(100_000_000), // subscription_price_sol in lamports
-    null,                 // subscription_price_usdc (null = don't change)
-    null,                 // subscription_duration
-    null,                 // staking_fee_share_bps
-    null                  // fee_wallet
-  )
-  .accounts({
-    admin: adminKeypair.publicKey,
-    config: configPda,
-  })
-  .rpc();
+For testing with low amounts:
+```bash
+SUBSCRIBE_SOL_ENABLED=true
+SUBSCRIBE_SOL_AMOUNT=0.01
+SUBSCRIBE_USDC_ENABLED=true
+SUBSCRIBE_USDC_AMOUNT=3.0
+FEE_WALLET=3vqEDEV6PBvpRc6TSC7grWPNAWGhL4q8mhxfeAubZ6RJ
 ```
 
-**Note**: `.env` variables `SUBSCRIPTION_PRICE_SOL` and `SUBSCRIPTION_PRICE_USDC` are optional fallbacks only used if on-chain fetch fails. The actual prices are always stored on-chain.
+To disable a payment method:
+```bash
+SUBSCRIBE_SOL_ENABLED=false
+SUBSCRIBE_USDC_ENABLED=true
+```
+
+**Note**: The bot shows payment instructions based on these `.env` values. Users send payments directly to `FEE_WALLET`, and the bot automatically detects subscriptions via on-chain polling. No dApp required!
 
 ## Premium Subscription Check
 

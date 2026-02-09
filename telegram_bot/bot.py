@@ -35,9 +35,15 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 RPC_URL = os.getenv("RPC_URL", "https://api.devnet.solana.com")
-FEE_WALLET = os.getenv("FEE_WALLET", "")
+FEE_WALLET = os.getenv("FEE_WALLET", "3vqEDEV6PBvpRc6TSC7grWPNAWGhL4q8mhxfeAubZ6RJ")
 PROGRAM_ID = os.getenv("PROGRAM_ID", "JG8fS89RdsLUGUst41UTj8kFFEjBxQKV6yzPaBmAEwL")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
+
+# Subscription configuration
+SUBSCRIBE_SOL_ENABLED = os.getenv("SUBSCRIBE_SOL_ENABLED", "true").lower() == "true"
+SUBSCRIBE_SOL_AMOUNT = float(os.getenv("SUBSCRIBE_SOL_AMOUNT", "0.01"))
+SUBSCRIBE_USDC_ENABLED = os.getenv("SUBSCRIBE_USDC_ENABLED", "true").lower() == "true"
+SUBSCRIBE_USDC_AMOUNT = float(os.getenv("SUBSCRIBE_USDC_AMOUNT", "3.0"))
 
 # Database file
 DB_FILE = "users.db"
@@ -336,6 +342,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text += "\n📋 Commands:\n"
     welcome_text += "/help - Show all commands\n"
     welcome_text += "/connect <pubkey> - Connect Solana wallet\n"
+    welcome_text += "/status - Check wallet, premium, alerts status\n"
     welcome_text += "/markets - View top prediction markets\n"
     welcome_text += "/boost <slug> - Get boosted probability\n"
     welcome_text += "/signals - View top signals (premium)\n"
@@ -372,6 +379,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text += "🔹 **Wallet & Premium:**\n"
     text += "/connect <pubkey> - Connect your Solana wallet\n"
+    text += "/status - Check wallet, premium, and alerts status\n"
     text += "/subscribe - Subscribe for premium access\n"
     text += "/signals - View top signals (premium only)\n\n"
     
@@ -514,6 +522,13 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
         return
     
+    # Check if any payment method is enabled
+    if not SUBSCRIBE_SOL_ENABLED and not SUBSCRIBE_USDC_ENABLED:
+        text = "⚠️ Subscription temporarily disabled.\n\n"
+        text += "Please check back later or contact support."
+        await update.message.reply_text(text)
+        return
+    
     # Not premium - show payment instructions
     text = "🔓 Premium Subscription Required\n\n"
     text += "Subscribe to unlock:\n"
@@ -521,30 +536,25 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text += "• Premium market analysis\n"
     text += "• Priority notifications\n\n"
     
-    # Fetch prices from on-chain config
-    prices = await get_subscription_prices()
-    
     text += "💳 Payment Options:\n\n"
     
-    if prices:
-        # Convert lamports to SOL (1 SOL = 1e9 lamports)
-        sol_price = prices["sol"] / 1e9
-        # Convert USDC (6 decimals) to USDC
-        usdc_price = prices["usdc"] / 1e6
-        
-        text += f"**SOL Payment:** {sol_price:.4f} SOL\n"
-        text += f"Send to: `{FEE_WALLET}`\n\n"
-        text += f"**USDC Payment:** {usdc_price:.2f} USDC\n"
-        text += f"Send to: `{FEE_WALLET}`\n\n"
-    else:
-        # Fallback if can't fetch prices
-        text += "**SOL Payment:**\n"
-        text += f"Send SOL to: `{FEE_WALLET}`\n\n"
-        text += "**USDC Payment:**\n"
-        text += f"Send USDC to: `{FEE_WALLET}`\n\n"
+    # Show enabled payment methods from .env
+    payment_options = []
     
-    text += "After payment, use the dApp to subscribe.\n"
-    text += "I'll check for your subscription automatically..."
+    if SUBSCRIBE_SOL_ENABLED:
+        payment_options.append(f"**SOL Payment:** Send `{SUBSCRIBE_SOL_AMOUNT} SOL` to\n`{FEE_WALLET}`")
+    
+    if SUBSCRIBE_USDC_ENABLED:
+        payment_options.append(f"**USDC Payment:** Send `{SUBSCRIBE_USDC_AMOUNT} USDC` to\n`{FEE_WALLET}`")
+    
+    text += "\n\n".join(payment_options)
+    text += "\n\n"
+    
+    text += "📱 **How to Subscribe:**\n"
+    text += "1. Send payment using your wallet (Phantom/etc)\n"
+    text += "2. I'll automatically detect and confirm subscription in a few minutes\n"
+    text += "3. No dApp needed — just send and wait!\n\n"
+    text += "⏳ Polling active — checking every 30 seconds..."
     
     status_msg = await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
     
@@ -555,18 +565,65 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_premium, expires_at = await poll_subscription_status(wallet, max_attempts=10, interval=30)
         
         if is_premium and expires_at:
-            success_text = f"✅ **Subscribed!** Premium Active\n\n"
+            success_text = f"✅ **Premium Active!**\n\n"
             success_text += f"Expires: {expires_at.strftime('%Y-%m-%d %H:%M:%S')} UTC\n\n"
-            success_text += "🔔 Alerts are active. You'll receive signal notifications every 10 minutes."
+            success_text += "🔔 Alerts are active. You'll receive signal notifications every 10 minutes.\n"
+            success_text += "✨ You now have access to /signals and premium features!"
             await status_msg.edit_text(success_text, parse_mode=ParseMode.MARKDOWN)
         else:
             timeout_text = "⏱️ Subscription not detected yet.\n\n"
-            timeout_text += "If you've already subscribed, it may take a few minutes to confirm.\n"
+            timeout_text += "If you've already sent payment, it may take a few minutes to confirm.\n"
             timeout_text += "Try /subscribe again later or check your transaction status."
             await status_msg.edit_text(timeout_text, parse_mode=ParseMode.MARKDOWN)
     
     # Run polling in background
     asyncio.create_task(poll_and_notify())
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /status command - show wallet, premium status, alerts"""
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    # Ensure user exists
+    create_or_update_user(user_id, chat_id)
+    
+    # Get user from DB
+    user = get_user(user_id)
+    wallet = user[2] if user and user[2] else None
+    alerts_opt_in = bool(user[3]) if user else True
+    
+    text = "📊 **Your Status**\n\n"
+    
+    # Wallet status
+    if wallet:
+        text += f"🔗 **Wallet:** `{wallet[:8]}...{wallet[-8:]}`\n"
+    else:
+        text += "🔗 **Wallet:** Not connected\n"
+        text += "Use /connect <pubkey> to connect\n"
+    
+    text += "\n"
+    
+    # Premium status
+    if wallet:
+        is_premium, expires_at = await check_premium_status(wallet)
+        if is_premium and expires_at:
+            text += f"⭐ **Premium:** Active\n"
+            text += f"📅 **Expires:** {expires_at.strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+        else:
+            text += "⭐ **Premium:** Not active\n"
+            text += "Use /subscribe to get premium access\n"
+    else:
+        text += "⭐ **Premium:** Connect wallet first\n"
+    
+    text += "\n"
+    
+    # Alerts status
+    alerts_status = "enabled" if alerts_opt_in else "disabled"
+    alerts_emoji = "✅" if alerts_opt_in else "❌"
+    text += f"{alerts_emoji} **Alerts:** {alerts_status}\n"
+    text += "Use /alerts on/off to toggle\n"
+    
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 async def markets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /markets command"""
