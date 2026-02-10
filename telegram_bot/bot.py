@@ -216,7 +216,7 @@ async def get_subscription_prices() -> Optional[Dict[str, int]]:
         logger.error(f"Error fetching subscription prices: {e}")
         return None
 
-async def check_premium_status(user_pubkey_str: str) -> tuple[bool, Optional[datetime]]:
+async def check_premium_status(user_pubkey_str: str, log_details: bool = False) -> tuple[bool, Optional[datetime]]:
     """
     Check if user has active subscription by querying Solana RPC
     Returns (is_premium, expires_at)
@@ -229,7 +229,11 @@ async def check_premium_status(user_pubkey_str: str) -> tuple[bool, Optional[dat
         # Derive subscription PDA
         subscription_pda = get_subscription_pda(user_pubkey, program_pubkey)
         
-        # Query account using aiohttp
+        if log_details:
+            logger.info(f"Checking premium status for user: {user_pubkey_str[:8]}...")
+            logger.info(f"Computed subscription PDA: {subscription_pda}")
+        
+        # Query account using aiohttp with "confirmed" commitment level
         async with aiohttp.ClientSession() as session:
             payload = {
                 "jsonrpc": "2.0",
@@ -238,25 +242,38 @@ async def check_premium_status(user_pubkey_str: str) -> tuple[bool, Optional[dat
                 "params": [
                     str(subscription_pda),
                     {
-                        "encoding": "base64"
+                        "encoding": "base64",
+                        "commitment": "confirmed"  # Use confirmed commitment for faster detection
                     }
                 ]
             }
             
-            async with session.post(RPC_URL, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as response:
+            async with session.post(RPC_URL, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as response:
                 if response.status != 200:
+                    if log_details:
+                        logger.warning(f"RPC request failed with status {response.status}")
                     return False, None
                 
                 result = await response.json()
                 
+                if log_details:
+                    logger.info(f"RPC response: account exists = {result.get('result', {}).get('value') is not None}")
+                
                 if "result" not in result or result["result"]["value"] is None:
+                    if log_details:
+                        logger.info("Subscription PDA account not found (user not subscribed yet)")
                     return False, None
                 
                 # Get account data (base64 encoded)
                 account_data_b64 = result["result"]["value"]["data"][0]
                 data = base64.b64decode(account_data_b64)
                 
+                if log_details:
+                    logger.info(f"Account data length: {len(data)} bytes")
+                
                 if len(data) < 50:  # Minimum expected size
+                    if log_details:
+                        logger.warning(f"Account data too short: {len(data)} bytes (expected >= 50)")
                     return False, None
                 
                 # Parse account data
@@ -265,28 +282,48 @@ async def check_premium_status(user_pubkey_str: str) -> tuple[bool, Optional[dat
                 expires_at_bytes = data[40:48]
                 expires_at = int.from_bytes(expires_at_bytes, byteorder='little', signed=True)
                 
+                if log_details:
+                    logger.info(f"Parsed expires_at: {expires_at} (timestamp)")
+                    if expires_at > 0:
+                        expires_dt = datetime.fromtimestamp(expires_at)
+                        logger.info(f"Expires at: {expires_dt.strftime('%Y-%m-%d %H:%M:%S')} UTC")
+                
                 # Check if subscription is active
                 current_timestamp = int(datetime.now().timestamp())
                 is_active = expires_at > current_timestamp
+                
+                if log_details:
+                    logger.info(f"Current timestamp: {current_timestamp}")
+                    logger.info(f"Subscription active: {is_active} (expires_at > current_timestamp)")
+                    if not is_active and expires_at > 0:
+                        logger.info(f"Subscription expired. Expired at: {datetime.fromtimestamp(expires_at).strftime('%Y-%m-%d %H:%M:%S')} UTC")
                 
                 expires_at_dt = datetime.fromtimestamp(expires_at) if expires_at > 0 else None
                 
                 return is_active, expires_at_dt
             
     except Exception as e:
-        logger.error(f"Error checking premium status: {e}")
+        logger.error(f"Error checking premium status: {e}", exc_info=True)
         return False, None
 
-async def poll_subscription_status(user_pubkey_str: str, max_attempts: int = 10, interval: int = 30) -> tuple[bool, Optional[datetime]]:
+async def poll_subscription_status(user_pubkey_str: str, max_attempts: int = 40, interval: int = 15) -> tuple[bool, Optional[datetime]]:
     """
     Poll RPC for subscription status (for subscription confirmation)
     Returns (is_premium, expires_at)
+    Uses 15s interval for faster feedback, up to 10 minutes (40 attempts * 15s)
     """
+    logger.info(f"Starting subscription polling: max_attempts={max_attempts}, interval={interval}s")
+    
     for attempt in range(max_attempts):
-        is_premium, expires_at = await check_premium_status(user_pubkey_str)
+        logger.info(f"Polling attempt {attempt + 1}/{max_attempts} for user {user_pubkey_str[:8]}...")
+        is_premium, expires_at = await check_premium_status(user_pubkey_str, log_details=(attempt == 0 or attempt % 5 == 0))
         if is_premium:
+            logger.info(f"Subscription detected on attempt {attempt + 1}!")
             return True, expires_at
-        await asyncio.sleep(interval)
+        if attempt < max_attempts - 1:  # Don't sleep on last attempt
+            await asyncio.sleep(interval)
+    
+    logger.warning(f"Subscription polling timed out after {max_attempts} attempts")
     return False, None
 
 # ============================================================================
@@ -347,6 +384,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text += "/boost <slug> - Get boosted probability\n"
     welcome_text += "/signals - View top signals (premium)\n"
     welcome_text += "/subscribe - Subscribe for premium access\n"
+    welcome_text += "/force_check_sub - Manually check subscription status\n"
     welcome_text += "/alerts on/off - Toggle signal notifications\n"
     
     # Add wallet connect button
@@ -381,6 +419,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text += "/connect <pubkey> - Connect your Solana wallet\n"
     text += "/status - Check wallet, premium, and alerts status\n"
     text += "/subscribe - Subscribe for premium access\n"
+    text += "/force_check_sub - Manually check subscription status\n"
     text += "/signals - View top signals (premium only)\n\n"
     
     text += "🔹 **Notifications:**\n"
@@ -554,30 +593,158 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text += "1. Send payment using your wallet (Phantom/etc)\n"
     text += "2. I'll automatically detect and confirm subscription in a few minutes\n"
     text += "3. No dApp needed — just send and wait!\n\n"
-    text += "⏳ Polling active — checking every 30 seconds..."
+    text += "⏳ Polling active — checking every 15 seconds (up to 10 minutes)..."
     
     status_msg = await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
     
-    # Start polling for subscription (up to 5 minutes = 10 attempts * 30 seconds)
-    logger.info(f"Starting subscription polling for user {user_id}")
+    # Start polling for subscription using JobQueue (up to 10 minutes = 40 attempts * 15 seconds)
+    logger.info(f"Starting subscription polling for user {user_id}, wallet: {wallet[:8]}...")
     
-    async def poll_and_notify():
-        is_premium, expires_at = await poll_subscription_status(wallet, max_attempts=10, interval=30)
+    # Store message and wallet in context for the polling job
+    context.job_data[f"poll_{user_id}"] = {
+        "wallet": wallet,
+        "status_msg": status_msg,
+        "user_id": user_id
+    }
+    
+    # Schedule polling job using JobQueue
+    job_queue = context.application.job_queue
+    if job_queue:
+        # Run polling job every 15 seconds, up to 40 times (10 minutes total)
+        job_queue.run_repeating(
+            poll_subscription_job,
+            interval=15,
+            first=15,  # Start after 15 seconds
+            last=600,  # Stop after 10 minutes (40 * 15s)
+            data={
+                "user_id": user_id, 
+                "wallet": wallet, 
+                "status_msg_id": status_msg.message_id, 
+                "chat_id": status_msg.chat_id,
+                "attempt": 0,
+                "max_attempts": 40
+            }
+        )
+        logger.info(f"Scheduled subscription polling job for user {user_id}")
+    else:
+        logger.error("JobQueue not available, falling back to asyncio.create_task")
+        # Fallback if JobQueue not available
+        asyncio.create_task(poll_and_notify_fallback(wallet, status_msg))
+
+async def poll_subscription_job(context: ContextTypes.DEFAULT_TYPE):
+    """JobQueue job to poll subscription status"""
+    job_data = context.job.data
+    user_id = job_data.get("user_id")
+    wallet = job_data.get("wallet")
+    status_msg_id = job_data.get("status_msg_id")
+    chat_id = job_data.get("chat_id")
+    attempt = job_data.get("attempt", 0)
+    max_attempts = job_data.get("max_attempts", 40)
+    
+    if not wallet or not user_id:
+        logger.error("Missing job data for subscription polling")
+        context.job.schedule_removal()
+        return
+    
+    attempt += 1
+    job_data["attempt"] = attempt
+    
+    logger.info(f"Polling subscription for user {user_id} (attempt {attempt}/{max_attempts})")
+    
+    # Check premium status (log details on first attempt and every 5th attempt)
+    is_premium, expires_at = await check_premium_status(wallet, log_details=(attempt == 1 or attempt % 5 == 0))
+    
+    if is_premium and expires_at:
+        # Success! Stop the job and update message
+        context.job.schedule_removal()
         
-        if is_premium and expires_at:
-            success_text = f"✅ **Premium Active!**\n\n"
-            success_text += f"Expires: {expires_at.strftime('%Y-%m-%d %H:%M:%S')} UTC\n\n"
-            success_text += "🔔 Alerts are active. You'll receive signal notifications every 10 minutes.\n"
-            success_text += "✨ You now have access to /signals and premium features!"
-            await status_msg.edit_text(success_text, parse_mode=ParseMode.MARKDOWN)
-        else:
-            timeout_text = "⏱️ Subscription not detected yet.\n\n"
-            timeout_text += "If you've already sent payment, it may take a few minutes to confirm.\n"
-            timeout_text += "Try /subscribe again later or check your transaction status."
-            await status_msg.edit_text(timeout_text, parse_mode=ParseMode.MARKDOWN)
+        success_text = f"✅ **Premium Active!**\n\n"
+        success_text += f"Expires: {expires_at.strftime('%Y-%m-%d %H:%M:%S')} UTC\n\n"
+        success_text += "🔔 Alerts are active. You'll receive signal notifications every 10 minutes.\n"
+        success_text += "✨ You now have access to /signals and premium features!"
+        
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_msg_id,
+                text=success_text,
+                parse_mode=ParseMode.MARKDOWN
+            )
+            logger.info(f"Subscription confirmed for user {user_id} on attempt {attempt}")
+        except Exception as e:
+            logger.error(f"Error updating subscription message: {e}")
+    elif attempt >= max_attempts:
+        # Timeout - stop the job and update message
+        context.job.schedule_removal()
+        
+        timeout_text = "⏱️ Subscription not detected yet.\n\n"
+        timeout_text += "If you've already sent payment, it may take a few minutes to confirm.\n"
+        timeout_text += "Try /force_check_sub to manually check or /subscribe again later."
+        
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_msg_id,
+                text=timeout_text,
+                parse_mode=ParseMode.MARKDOWN
+            )
+            logger.warning(f"Subscription polling timed out for user {user_id} after {attempt} attempts")
+        except Exception as e:
+            logger.error(f"Error updating timeout message: {e}")
+
+async def poll_and_notify_fallback(wallet: str, status_msg):
+    """Fallback polling function if JobQueue not available"""
+    is_premium, expires_at = await poll_subscription_status(wallet, max_attempts=40, interval=15)
     
-    # Run polling in background
-    asyncio.create_task(poll_and_notify())
+    if is_premium and expires_at:
+        success_text = f"✅ **Premium Active!**\n\n"
+        success_text += f"Expires: {expires_at.strftime('%Y-%m-%d %H:%M:%S')} UTC\n\n"
+        success_text += "🔔 Alerts are active. You'll receive signal notifications every 10 minutes.\n"
+        success_text += "✨ You now have access to /signals and premium features!"
+        await status_msg.edit_text(success_text, parse_mode=ParseMode.MARKDOWN)
+    else:
+        timeout_text = "⏱️ Subscription not detected yet.\n\n"
+        timeout_text += "If you've already sent payment, it may take a few minutes to confirm.\n"
+        timeout_text += "Try /force_check_sub to manually check or /subscribe again later."
+        await status_msg.edit_text(timeout_text, parse_mode=ParseMode.MARKDOWN)
+
+async def force_check_sub_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /force_check_sub command - manually trigger subscription check"""
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    # Ensure user exists
+    create_or_update_user(user_id, chat_id)
+    
+    # Get user from DB
+    user = get_user(user_id)
+    wallet = user[2] if user and user[2] else None
+    
+    if not wallet:
+        await update.message.reply_text(
+            "❌ No wallet connected.\n\n"
+            "Use /connect <pubkey> to connect your wallet first."
+        )
+        return
+    
+    await update.message.reply_text(f"🔍 Checking subscription status for wallet `{wallet[:8]}...{wallet[-8:]}`...")
+    
+    # Force check with detailed logging
+    is_premium, expires_at = await check_premium_status(wallet, log_details=True)
+    
+    if is_premium and expires_at:
+        text = f"✅ **Premium Subscription Active!**\n\n"
+        text += f"Wallet: `{wallet[:8]}...{wallet[-8:]}`\n"
+        text += f"Expires: {expires_at.strftime('%Y-%m-%d %H:%M:%S')} UTC\n\n"
+        text += "🔔 Alerts are active. You have access to /signals and premium features!"
+    else:
+        text = "❌ **No Active Subscription**\n\n"
+        text += f"Wallet: `{wallet[:8]}...{wallet[-8:]}`\n\n"
+        if expires_at:
+            text += f"Last subscription expired: {expires_at.strftime('%Y-%m-%d %H:%M:%S')} UTC\n\n"
+        text += "Use /subscribe to get premium access."
+    
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /status command - show wallet, premium status, alerts"""
@@ -911,6 +1078,8 @@ def main():
     application.add_handler(CommandHandler("connect", connect_command))
     application.add_handler(CommandHandler("alerts", alerts_command))
     application.add_handler(CommandHandler("subscribe", subscribe_command))
+    application.add_handler(CommandHandler("force_check_sub", force_check_sub_command))
+    application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("markets", markets_command))
     application.add_handler(CommandHandler("boost", boost_command))
     application.add_handler(CommandHandler("signals", signals_command))
